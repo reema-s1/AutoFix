@@ -114,7 +114,7 @@ def test_ollama_request_and_tool_roundtrip(serve):
     history = server.requests[1]["body"]["messages"]
     assert history[-1] == {"role": "tool", "tool_name": "read_file", "content": "ERROR: contents"}
     assert planner.usage.model_calls == 2 and planner.usage.input_tokens == 100
-    assert planner.model == "ollama:qwen"
+    assert planner.model == "qwen"
 
 
 def test_openai_request_and_tool_roundtrip(serve):
@@ -251,7 +251,7 @@ def test_cli_provider_configuration(monkeypatch):
     parse = lambda *a: cli.build_parser().parse_args(["fix", ".", *a])  # noqa: E731
 
     ollama = cli._planner(parse("--provider", "ollama"))
-    assert ollama.model == "ollama:qwen2.5-coder:7b"
+    assert ollama.model == "qwen2.5-coder:7b"
     assert ollama.backend.base_url == "http://127.0.0.1:11434"
     monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0:9999")
     assert cli._planner(parse("--provider", "ollama")).backend.base_url == "http://0.0.0.0:9999"

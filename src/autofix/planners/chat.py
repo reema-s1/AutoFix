@@ -267,7 +267,7 @@ class OpenAICompatibleBackend:
 class ChatPlanner:
     def __init__(self, backend: ChatBackend) -> None:
         self.backend = backend
-        self.model = f"{backend.name}:{backend.model}"
+        self.model = backend.model
         self.usage = Usage()
         self.messages: list[dict[str, Any]] = []
         self._tools: list[dict[str, Any]] = []
