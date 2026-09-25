@@ -110,6 +110,16 @@ class Usage:
 class PlannerError(RuntimeError):
     """The planner could not produce an action (API failure, refusal, ...)."""
 
+    # A fatal error says nothing about the task (e.g. quota exhausted): the run is
+    # aborted rather than recorded as the agent failing.
+    fatal = False
+
+
+class RateLimited(PlannerError):
+    """The provider's rate limit or quota is exhausted for longer than is worth waiting."""
+
+    fatal = True
+
 
 class Planner(Protocol):
     usage: Usage
@@ -201,6 +211,8 @@ def run_agent(
         try:
             action = planner.propose()
         except PlannerError as exc:
+            if exc.fatal:
+                raise
             error = str(exc)
             tracer.emit("error", iter=iteration, message=error)
             stop_reason = "planner_error"
@@ -227,6 +239,8 @@ def run_agent(
             final = planner.conclude("step budget exhausted")
             _trace_plan(tracer, len(steps), final)
         except PlannerError as exc:
+            if exc.fatal:
+                raise
             tracer.emit("error", iter=len(steps), message=str(exc))
 
     claimed = final.args.get("fixed") if final else None

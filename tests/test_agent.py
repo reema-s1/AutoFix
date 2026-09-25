@@ -143,3 +143,17 @@ def test_usage_add():
     total.add(Usage(10, 5, 2, 1))
     total.add(Usage(1, 1, 0, 1))
     assert (total.input_tokens, total.output_tokens, total.cache_read_tokens, total.model_calls) == (11, 6, 2, 2)
+
+
+def test_fatal_planner_error_propagates(toy_project):
+    import pytest
+
+    from autofix.agent import RateLimited
+
+    class Quota(ScriptedPlanner):
+        def propose(self):
+            raise RateLimited("daily quota exhausted")
+
+    toolbox, tracer, _ = make(toy_project)
+    with pytest.raises(RateLimited):
+        run_agent(toolbox, Quota([]), tracer)

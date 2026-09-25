@@ -174,3 +174,48 @@ def test_eval_aborts_when_first_run_cannot_reach_model(tmp_path):
     with pytest.raises(EvalAborted, match="403"):
         evaluate(bugs, config, lambda: Unreachable([]), KeywordJudge(), on_result=started.append)
     assert len(started) == 1  # stopped after the first run
+
+
+def test_quota_exhaustion_aborts_with_partial_results_and_resumes(tmp_path):
+    from autofix.agent import RateLimited
+    from autofix.evaluation import EvalAborted, load_results
+
+    bugs = [BUGS["ringbuf-full-check"], BUGS["ringbuf-peek-index"], BUGS["strkit-missing-ctype"]]
+    config = EvalConfig(fixtures_dir=FIXTURES, work_dir=tmp_path, budgets=(8,))
+    calls = {"n": 0}
+
+    class QuotaAfterTwo(ScriptedPlanner):
+        def propose(self):
+            calls["n"] += 1
+            if calls["n"] > 2:
+                raise RateLimited("tokens per day exhausted")
+            return super().propose()
+
+    def give_up():
+        return QuotaAfterTwo(
+            [Action(DONE, {"root_cause": "?", "summary": "", "fixed": False, "confidence": 0.1})]
+        )
+
+    with pytest.raises(EvalAborted, match="tokens per day") as info:
+        evaluate(bugs, config, give_up, KeywordJudge())
+    assert [r.bug_id for r in info.value.results] == ["ringbuf-full-check", "ringbuf-peek-index"]
+
+    saved = load_results(tmp_path)
+    assert {r.bug_id for r in saved} == {"ringbuf-full-check", "ringbuf-peek-index"}
+
+    ran = []
+    resumed = evaluate(bugs, config, lambda: oracle_planner(BUGS["strkit-missing-ctype"]), KeywordJudge(),
+                       on_result=lambda r: ran.append(r.bug_id), previous=saved)
+    assert ran == ["strkit-missing-ctype"]  # only the missing run
+    assert [r.bug_id for r in resumed] == [b.id for b in bugs]
+    assert resumed[2].outcome == "fixed"
+
+
+def test_load_results_skips_truncated_lines(tmp_path):
+    from dataclasses import asdict
+
+    from autofix.evaluation import load_results
+
+    good = json.dumps(asdict(result(bug_id="a")))
+    (tmp_path / "results.jsonl").write_text(good + "\n" + good[:40] + "\n")
+    assert [r.bug_id for r in load_results(tmp_path)] == ["a"]

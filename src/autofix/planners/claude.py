@@ -12,7 +12,7 @@ from typing import Any
 
 import anthropic
 
-from ..agent import DONE, Action, PlannerError, Usage
+from ..agent import DONE, Action, PlannerError, RateLimited, Usage
 from ..tools import ToolResult, ToolSpec
 from .prompts import BUDGET_EXHAUSTED, MAX_NUDGES, NUDGE, SYSTEM_PROMPT
 
@@ -119,7 +119,7 @@ class ClaudePlanner:
         except anthropic.AuthenticationError as exc:
             raise PlannerError("authentication failed; set ANTHROPIC_API_KEY or run `ant auth login`") from exc
         except anthropic.RateLimitError as exc:
-            raise PlannerError("rate limited after retries; try again later") from exc
+            raise RateLimited("rate limited after retries; try again later") from exc
         except anthropic.APIStatusError as exc:
             raise PlannerError(f"API error {exc.status_code}: {exc.message}") from exc
         except anthropic.APIConnectionError as exc:

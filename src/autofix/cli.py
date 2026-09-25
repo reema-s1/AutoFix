@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import datetime
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .agent import AgentConfig, run_agent
+from .agent import AgentConfig, PlannerError, run_agent
 from .bugs import BugSpecError, load_bugs, materialize
 from .config import ConfigError, ProjectConfig
 from .tools import Toolbox
@@ -49,6 +50,9 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, BugSpecError, FileNotFoundError, NotADirectoryError) as exc:
         print(f"autofix: {exc}", file=sys.stderr)
         return 2
+    except PlannerError as exc:  # fatal model errors, e.g. an exhausted quota
+        print(f"autofix: {exc}", file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         print("autofix: interrupted", file=sys.stderr)
         return 130
@@ -79,7 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--judge", choices=("auto", "llm", "keywords"), default="auto",
                     help="how to score diagnoses: an LLM judge or keyword groups "
                          "(default: auto = llm for claude, keywords otherwise)")
-    ev.add_argument("--out", type=Path, help="output directory (default: runs/eval-<timestamp>)")
+    out = ev.add_mutually_exclusive_group()
+    out.add_argument("--out", type=Path, help="output directory (default: runs/eval-<timestamp>)")
+    out.add_argument("--resume", type=Path, metavar="DIR",
+                     help="continue an interrupted evaluation in DIR with its original settings")
     ev.set_defaults(handler=cmd_eval)
 
     replay = sub.add_parser("replay", help="replay a recorded trace")
@@ -204,12 +211,23 @@ def cmd_fix(args: argparse.Namespace) -> int:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    from .evaluation import EvalAborted, EvalConfig, evaluate, summarize, write_results
+    from .evaluation import EvalAborted, EvalConfig, evaluate, load_results, summarize, write_results
+
+    previous = []
+    if args.resume:
+        out_dir = args.resume
+        settings_path = out_dir / EVAL_SETTINGS
+        if not settings_path.is_file():
+            raise ConfigError(f"{out_dir} is not an evaluation directory (no {EVAL_SETTINGS})")
+        for key, value in json.loads(settings_path.read_text(encoding="utf-8")).items():
+            setattr(args, key, value)
+        previous = load_results(out_dir)
+    else:
+        out_dir = args.out or Path("runs") / f"eval-{datetime.now():%Y%m%d-%H%M%S}"
 
     if any(b < 1 for b in args.budgets):
         raise ConfigError("--budgets must all be at least 1")
     bugs = load_bugs(args.fixtures / "bugs", set(args.only) if args.only else None)
-    out_dir = args.out or Path("runs") / f"eval-{datetime.now():%Y%m%d-%H%M%S}"
     config = EvalConfig(
         fixtures_dir=args.fixtures, work_dir=out_dir, budgets=tuple(sorted(set(args.budgets))), jobs=args.jobs
     )
@@ -219,8 +237,15 @@ def cmd_eval(args: argparse.Namespace) -> int:
         return _planner(args)
 
     planner_factory()  # fail fast on configuration errors before any work starts
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not args.resume:
+        settings = {k: getattr(args, k) for k in _EVAL_SETTING_KEYS}
+        settings["model"] = _model(args)
+        (out_dir / EVAL_SETTINGS).write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
     total = len(bugs) * len(config.budgets)
-    done = 0
+    done = sum((r.bug_id, r.max_iters) in {(b.id, k) for b in bugs for k in config.budgets}
+               for r in previous if r.outcome != "error")
 
     def progress(result) -> None:
         nonlocal done
@@ -230,17 +255,26 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print(f"[{done}/{total}] {result.bug_id} (budget {result.max_iters}): {result.outcome}, {diag}, "
               f"{result.iterations} call(s){error}", file=sys.stderr, flush=True)
 
-    print(f"evaluating {len(bugs)} bug(s) x budgets {list(config.budgets)} -> {out_dir}", file=sys.stderr)
+    resumed = f", resuming with {done} already done" if done else ""
+    print(f"evaluating {len(bugs)} bug(s) x budgets {list(config.budgets)} -> {out_dir}{resumed}", file=sys.stderr)
     try:
-        results = evaluate(bugs, config, planner_factory, judge, on_result=progress)
+        results = evaluate(bugs, config, planner_factory, judge, on_result=progress, previous=previous)
     except EvalAborted as exc:
         print(f"autofix: stopping evaluation, the model could not be used: {exc}", file=sys.stderr)
+        if exc.results:
+            _, md_path = write_results(exc.results, summarize(exc.results), out_dir)
+            print(f"partial report ({len(exc.results)}/{total} runs): {md_path}", file=sys.stderr)
+        print(f"continue later with: autofix eval --resume {out_dir}", file=sys.stderr)
         return 1
     summaries = summarize(results)
     json_path, md_path = write_results(results, summaries, out_dir)
     print(md_path.read_text(encoding="utf-8"))
     print(f"results: {json_path}\nreport:  {md_path}", file=sys.stderr)
     return 0
+
+
+EVAL_SETTINGS = "settings.json"
+_EVAL_SETTING_KEYS = ("provider", "model", "base_url", "effort", "num_ctx", "only", "budgets", "judge")
 
 
 def cmd_replay(args: argparse.Namespace) -> int:

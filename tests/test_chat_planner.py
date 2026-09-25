@@ -287,3 +287,23 @@ def test_repeated_rejections_give_up(serve):
     planner.begin("b", SPECS)
     with pytest.raises(PlannerError, match="without calling a tool"):
         planner.propose()
+
+
+def test_long_rate_limit_is_fatal_without_waiting(serve):
+    from autofix.agent import RateLimited
+
+    daily = (429, {"error": {"message": "tokens per day (TPD): Limit 200000", "code": "rate_limit_exceeded"}},
+             {"Retry-After": "910"})
+    server = serve([daily])
+    slept = []
+    with pytest.raises(RateLimited, match="tokens per day") as info:
+        _post_json(server.url, {}, {}, timeout=5, sleep=slept.append)
+    assert info.value.fatal and slept == []
+
+
+def test_rate_limit_retries_exhausted_is_fatal(serve):
+    from autofix.agent import RateLimited
+
+    server = serve([(429, {"error": "slow"}, {"Retry-After": "0"})] * 3)
+    with pytest.raises(RateLimited):
+        _post_json(server.url, {}, {}, timeout=5, max_retries=2, sleep=lambda _: None)

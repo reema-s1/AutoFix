@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +30,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from .agent import AgentConfig, Planner, run_agent
+from .agent import AgentConfig, Planner, PlannerError, run_agent
 from .bugs import SeededBug, materialize
 from .config import ProjectConfig
 from .sandbox import Sandbox
@@ -37,7 +38,14 @@ from .tools import Toolbox
 from .tracing import JsonlSink, Tracer, new_run_id
 
 class EvalAborted(RuntimeError):
-    """The first run could not reach the model, so every other run would fail the same way."""
+    """The model became unusable (bad key, exhausted quota), so further runs would be wasted.
+
+    ``results`` holds every run completed before the evaluation stopped.
+    """
+
+    def __init__(self, message: str, results: list["BugResult"] | None = None) -> None:
+        super().__init__(message)
+        self.results = results or []
 
 
 OUTCOMES = ("fixed", "fixed_unclaimed", "hallucinated", "gave_up_honestly", "no_verdict", "error")
@@ -133,8 +141,6 @@ class ChatJudge:
         self._fallback = KeywordJudge()
 
     def judge(self, bug: SeededBug, diagnosis: str) -> Verdict:
-        from .agent import PlannerError
-
         if not diagnosis.strip():
             return Verdict(False, "no diagnosis given", "empty")
         prompt = _JUDGE_PROMPT.format(known=bug.root_cause, diagnosis=diagnosis) + self._FORMAT
@@ -197,34 +203,92 @@ class EvalConfig:
 PlannerFactory = Callable[[], Planner]
 
 
+RESULTS_LOG = "results.jsonl"
+
+
+def load_results(work_dir: Path) -> list[BugResult]:
+    """Results already recorded in ``work_dir``, for resuming an interrupted evaluation."""
+    path = Path(work_dir) / RESULTS_LOG
+    if not path.is_file():
+        return []
+    results = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                results.append(BugResult(**json.loads(line)))
+            except (ValueError, TypeError):
+                continue  # a line cut short by an interruption
+    # A later entry for the same bug and budget replaces an earlier one.
+    latest = {(r.bug_id, r.max_iters): r for r in results}
+    return list(latest.values())
+
+
 def evaluate(
     bugs: Iterable[SeededBug],
     config: EvalConfig,
     planner_factory: PlannerFactory,
     judge: DiagnosisJudge,
     on_result: Callable[[BugResult], None] | None = None,
+    previous: Iterable[BugResult] = (),
 ) -> list[BugResult]:
-    tasks = [(bug, budget) for budget in config.budgets for bug in bugs]
+    """Run every (bug, budget) pair not already in ``previous``.
+
+    Each result is appended to ``results.jsonl`` as soon as it is known, so an
+    evaluation stopped by a quota or a crash can be resumed. If the model
+    becomes unusable, :class:`EvalAborted` is raised carrying the results so far.
+    """
+    bugs = list(bugs)
+    wanted = {(b.id, k) for k in config.budgets for b in bugs}
+    kept = [r for r in previous if (r.bug_id, r.max_iters) in wanted and r.outcome != "error"]
+    done = {(r.bug_id, r.max_iters) for r in kept}
+    tasks = [(bug, k) for k in config.budgets for bug in bugs if (bug.id, k) not in done]
+    order = {key: i for i, key in enumerate((b.id, k) for k in config.budgets for b in bugs)}
+
     config.work_dir.mkdir(parents=True, exist_ok=True)
+    results = list(kept)
+    lock = threading.Lock()
+
+    def ordered() -> list[BugResult]:
+        return sorted(results, key=lambda r: order[(r.bug_id, r.max_iters)])
 
     def run(task: tuple[SeededBug, int]) -> BugResult:
         bug, budget = task
         result = evaluate_one(bug, budget, config, planner_factory, judge)
+        with lock:
+            with open(config.work_dir / RESULTS_LOG, "a", encoding="utf-8") as log:
+                log.write(json.dumps(asdict(result)) + "\n")
+            results.append(result)
         if on_result:
             on_result(result)
         return result
 
-    if not tasks:
-        return []
-    # Run one task alone first: a bad key or unreachable endpoint fails every run
-    # identically, so stop instead of producing a report full of planner errors.
-    first = run(tasks[0])
-    if first.stop_reason == "planner_error" and first.iterations == 0:
-        raise EvalAborted(first.error or "the planner failed before taking any action")
-    if config.jobs <= 1:
-        return [first, *(run(t) for t in tasks[1:])]
-    with ThreadPoolExecutor(max_workers=config.jobs) as pool:
-        return [first, *pool.map(run, tasks[1:])]
+    try:
+        if not tasks:
+            return ordered()
+        # Run one task alone first: a bad key or unreachable endpoint fails every run
+        # identically, so stop instead of producing a report full of planner errors.
+        first = run(tasks[0])
+        if first.stop_reason == "planner_error" and first.iterations == 0:
+            raise EvalAborted(first.error or "the planner failed before taking any action")
+        if config.jobs <= 1:
+            for task in tasks[1:]:
+                run(task)
+        else:
+            with ThreadPoolExecutor(max_workers=config.jobs) as pool:
+                futures = [pool.submit(run, t) for t in tasks[1:]]
+                abort: EvalAborted | None = None
+                for future in futures:
+                    try:
+                        future.result()
+                    except EvalAborted as exc:
+                        abort = abort or exc
+                        for pending in futures:
+                            pending.cancel()
+                if abort:
+                    raise abort
+    except EvalAborted as exc:
+        raise EvalAborted(str(exc), ordered()) from exc.__cause__
+    return ordered()
 
 
 def evaluate_one(
@@ -254,6 +318,8 @@ def evaluate_one(
     try:
         with tracer:
             outcome = run_agent(toolbox, planner_factory(), tracer, AgentConfig(max_iters=budget))
+    except PlannerError as exc:  # only fatal planner errors escape run_agent
+        raise EvalAborted(str(exc)) from exc
     except Exception as exc:  # keep the evaluation going; record the failure
         return BugResult(
             **base, outcome="error", stop_reason="exception", iterations=0, claimed_fixed=None,

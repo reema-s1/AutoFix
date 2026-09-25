@@ -111,3 +111,33 @@ def test_eval_with_keyword_judge(tmp_path, monkeypatch, capsys):
     assert code == 0
     report = (out_dir / "report.md").read_text()
     assert "| strkit-missing-ctype | build | 1 | gave_up_honestly | no |" in report
+
+
+def test_eval_quota_abort_then_resume(tmp_path, monkeypatch, capsys):
+    from autofix.agent import RateLimited
+
+    out_dir = tmp_path / "eval"
+    give_up = Action(DONE, {"root_cause": "no idea", "summary": "", "fixed": False, "confidence": 0.1})
+    calls = {"n": 0}
+
+    class Quota(ScriptedPlanner):
+        def propose(self):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise RateLimited("tokens per day exhausted")
+            return super().propose()
+
+    monkeypatch.setattr(cli, "_planner", lambda args: Quota([give_up]))
+    code = cli.main(["eval", "--only", "strkit-missing-ctype", "strkit-static-count", "--budgets", "1",
+                     "--judge", "keywords", "--out", str(out_dir)])
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "tokens per day" in err and f"autofix eval --resume {out_dir}" in err
+    assert "partial report (1/2 runs)" in err
+
+    monkeypatch.setattr(cli, "_planner", scripted(give_up))
+    assert cli.main(["eval", "--resume", str(out_dir)]) == 0
+    err = capsys.readouterr().err
+    assert "resuming with 1 already done" in err
+    report = (out_dir / "report.md").read_text()
+    assert "strkit-missing-ctype" in report and "strkit-static-count" in report

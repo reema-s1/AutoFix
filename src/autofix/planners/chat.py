@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .. import __version__
-from ..agent import DONE, Action, PlannerError, Usage
+from ..agent import DONE, Action, PlannerError, RateLimited, Usage
 from ..tools import ToolResult, ToolSpec
 from .prompts import BUDGET_EXHAUSTED, MAX_NUDGES, NUDGE, SYSTEM_PROMPT
 
@@ -64,6 +64,8 @@ class ChatBackend(Protocol):
 # -- HTTP ---------------------------------------------------------------------
 
 USER_AGENT = f"autofix/{__version__}"
+# Per-minute limits clear quickly and are worth waiting out; daily quotas are not.
+MAX_RATE_LIMIT_WAIT = 120.0
 
 
 def _post_json(
@@ -89,8 +91,14 @@ def _post_json(
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
-            if exc.code in (429, 500, 502, 503, 504) and attempt < max_retries:
-                sleep(_retry_delay(exc.headers.get("Retry-After"), attempt))
+            if exc.code == 429:
+                delay = _retry_delay(exc.headers.get("Retry-After"), attempt)
+                if attempt >= max_retries or delay > MAX_RATE_LIMIT_WAIT:
+                    raise RateLimited(f"rate limited by {url}: {_error_message(detail)}") from exc
+                sleep(delay)
+                continue
+            if exc.code in (500, 502, 503, 504) and attempt < max_retries:
+                sleep(min(_retry_delay(exc.headers.get("Retry-After"), attempt), MAX_RATE_LIMIT_WAIT))
                 continue
             if exc.code == 400 and "tool_use_failed" in detail:
                 raise ToolCallRejected(_error_message(detail)) from exc
@@ -119,7 +127,7 @@ def _error_message(detail: str) -> str:
 def _retry_delay(retry_after: str | None, attempt: int) -> float:
     try:
         if retry_after is not None:
-            return min(float(retry_after), 120.0)
+            return float(retry_after)
     except ValueError:
         pass
     return min(2.0 ** attempt * 2, 60.0)
