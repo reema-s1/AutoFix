@@ -202,8 +202,14 @@ def render_trace(events: list[dict[str, Any]], width: int = 100) -> str:
         elif step == "plan":
             conf = e.get("confidence")
             conf_s = f" (confidence {conf:.2f})" if isinstance(conf, (int, float)) else ""
-            out.append(f"{it} believe  {_clip(e.get('belief', ''), width)}{conf_s}")
-            out.append(f"{it} act      {e.get('tool')}({_clip(_fmt_args(e.get('args', {})), width)})")
+            args = e.get("args", {})
+            if e.get("tool") == "declare_done":
+                claim = "fixed" if args.get("fixed") else "not fixed"
+                cause = args.get("root_cause") or e.get("belief", "")
+                out.append(f"{it} conclude {claim}: {_clip(cause, width)}{conf_s}")
+            else:
+                out.append(f"{it} believe  {_clip(e.get('belief', ''), width)}{conf_s}")
+                out.append(f"{it} act      {e.get('tool')}({_clip(_fmt_args(args), width)})")
         elif step == "tool_result":
             flag = "!" if e.get("is_error") else " "
             out.append(f"{it} result{flag}  {_clip(e.get('summary', ''), width)}")
