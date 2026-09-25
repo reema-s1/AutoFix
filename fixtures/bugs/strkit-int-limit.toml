@@ -1,0 +1,15 @@
+id = "strkit-int-limit"
+project = "strkit"
+category = "logic"
+symptom = "test_failure"
+root_cause = """
+str_to_int in src/strkit.c checks value >= (limit - digit) / 10 instead of value >
+(limit - digit) / 10, so INT_MAX and INT_MIN themselves are rejected as overflow."""
+keywords = [["str_to_int"], ["overflow", "limit", "int_max", "int_min", ">=", "boundary"]]
+
+[[mutation]]
+file = "src/strkit.c"
+find = '''
+if (value > (limit - digit) / 10) {'''
+replace = '''
+if (value >= (limit - digit) / 10) {'''

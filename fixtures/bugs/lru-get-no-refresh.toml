@@ -1,0 +1,16 @@
+id = "lru-get-no-refresh"
+project = "lrucache"
+category = "logic"
+symptom = "test_failure"
+root_cause = """
+Cache::get in src/lru.cpp returns the value without splicing the entry to the front of
+order_, so reads do not refresh recency and the wrong entry is evicted."""
+keywords = [["get"], ["splice", "recen", "refresh", "move", "front"]]
+
+[[mutation]]
+file = "src/lru.cpp"
+find = '''
+    order_.splice(order_.begin(), order_, it->second);
+    value = it->second->second;'''
+replace = '''
+    value = it->second->second;'''

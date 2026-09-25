@@ -1,0 +1,15 @@
+id = "ringbuf-size-signature"
+project = "ringbuf"
+category = "build"
+symptom = "build_failure"
+root_cause = """
+ring_size is defined in src/ring.c as returning int while src/ring.h declares it as
+returning size_t, giving conflicting types."""
+keywords = [["ring_size"], ["conflicting", "size_t", "return type", "signature", "declar"]]
+
+[[mutation]]
+file = "src/ring.c"
+find = '''
+size_t ring_size(const ring_t *r)'''
+replace = '''
+int ring_size(const ring_t *r)'''

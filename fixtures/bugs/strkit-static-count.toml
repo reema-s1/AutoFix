@@ -1,0 +1,17 @@
+id = "strkit-static-count"
+project = "strkit"
+category = "build"
+symptom = "build_failure"
+root_cause = """
+str_count in src/strkit.c is defined static although src/strkit.h declares it with
+external linkage, so the definition conflicts with the declaration."""
+keywords = [["str_count"], ["static", "linkage", "declar"]]
+
+[[mutation]]
+file = "src/strkit.c"
+find = '''
+size_t str_count(const char *s, const char *needle)
+{'''
+replace = '''
+static size_t str_count(const char *s, const char *needle)
+{'''

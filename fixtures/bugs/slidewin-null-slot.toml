@@ -1,0 +1,18 @@
+id = "slidewin-null-slot"
+project = "slidewin"
+category = "crash"
+symptom = "crash"
+root_cause = """
+receiver_on_frame in src/window.c dereferences the slot returned by slot_for without
+checking for NULL, which slot_for returns for frames outside the receive window."""
+keywords = [["receiver_on_frame", "slot_for", "slot"], ["null", "outside", "window", "check"]]
+
+[[mutation]]
+file = "src/window.c"
+find = '''
+    if (slot == NULL) {
+        return -1;
+    }
+    slot->present = 1;'''
+replace = '''
+    slot->present = 1;'''

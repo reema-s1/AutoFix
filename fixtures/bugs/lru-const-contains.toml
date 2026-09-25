@@ -1,0 +1,15 @@
+id = "lru-const-contains"
+project = "lrucache"
+category = "build"
+symptom = "build_failure"
+root_cause = """
+Cache::contains in src/lru.cpp is a const member but uses index_[key], and operator[] is
+non-const, so it does not compile; it should use count or find."""
+keywords = [["contains"], ["const", "operator[]", "count", "find", "qualifier"]]
+
+[[mutation]]
+file = "src/lru.cpp"
+find = '''
+    return index_.count(key) != 0;'''
+replace = '''
+    return index_[key] != order_.end();'''

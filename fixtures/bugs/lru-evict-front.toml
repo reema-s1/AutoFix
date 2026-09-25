@@ -1,0 +1,17 @@
+id = "lru-evict-front"
+project = "lrucache"
+category = "logic"
+symptom = "test_failure"
+root_cause = """
+Cache::put in src/lru.cpp evicts order_.front(), the most recently used entry, instead
+of order_.back(), the least recently used one."""
+keywords = [["put", "evict"], ["front", "back", "most recently", "least recently"]]
+
+[[mutation]]
+file = "src/lru.cpp"
+find = '''
+        index_.erase(order_.back().first);
+        order_.pop_back();'''
+replace = '''
+        index_.erase(order_.front().first);
+        order_.pop_front();'''

@@ -1,0 +1,21 @@
+id = "ringbuf-full-check"
+project = "ringbuf"
+category = "logic"
+symptom = "test_failure"
+root_cause = """
+ring_push in src/ring.c tests count > cap instead of count == cap, so a push into a full
+ring succeeds and overwrites the oldest element."""
+keywords = [["ring_push"], ["full", "capacity", "cap", "==", ">="]]
+
+[[mutation]]
+file = "src/ring.c"
+find = '''
+    if (r->count == r->cap) {
+        return -1;
+    }
+    r->buf[r->head] = value;'''
+replace = '''
+    if (r->count > r->cap) {
+        return -1;
+    }
+    r->buf[r->head] = value;'''

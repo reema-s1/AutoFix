@@ -1,0 +1,15 @@
+id = "ringbuf-snapshot-offset"
+project = "ringbuf"
+category = "logic"
+symptom = "test_failure"
+root_cause = """
+ring_snapshot in src/ring.c copies buf[i] instead of buf[(tail + i) % cap], ignoring the
+read position, so the order is wrong once the ring has wrapped."""
+keywords = [["ring_snapshot", "snapshot"], ["tail", "offset", "wrap", "modulo", "% r->cap"]]
+
+[[mutation]]
+file = "src/ring.c"
+find = '''
+out[i] = r->buf[(r->tail + i) % r->cap];'''
+replace = '''
+out[i] = r->buf[i];'''

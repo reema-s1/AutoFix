@@ -1,0 +1,18 @@
+id = "lru-evict-order"
+project = "lrucache"
+category = "memory"
+symptom = "test_failure"
+root_cause = """
+Cache::put in src/lru.cpp pops the back of order_ before erasing its key from index_, so
+it erases the wrong key and leaves a dangling iterator for the evicted entry (use after
+free)."""
+keywords = [["put", "evict"], ["order", "dangling", "erase", "pop_back", "use after free", "use-after-free", "wrong key"]]
+
+[[mutation]]
+file = "src/lru.cpp"
+find = '''
+        index_.erase(order_.back().first);
+        order_.pop_back();'''
+replace = '''
+        order_.pop_back();
+        index_.erase(order_.back().first);'''

@@ -1,0 +1,15 @@
+id = "strkit-join-terminator"
+project = "strkit"
+category = "memory"
+symptom = "test_failure"
+root_cause = """
+str_join in src/strkit.c writes the NUL terminator at dst[dst_size] when truncating, one
+byte past the buffer, instead of dst[dst_size - 1]."""
+keywords = [["str_join"], ["terminator", "nul", "dst_size - 1", "overflow", "out of bounds", "off-by-one", "past the"]]
+
+[[mutation]]
+file = "src/strkit.c"
+find = '''
+dst[len < dst_size ? len : dst_size - 1] = '\0';'''
+replace = '''
+dst[len < dst_size ? len : dst_size] = '\0';'''

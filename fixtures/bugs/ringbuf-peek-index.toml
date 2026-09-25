@@ -1,0 +1,17 @@
+id = "ringbuf-peek-index"
+project = "ringbuf"
+category = "logic"
+symptom = "test_failure"
+root_cause = """
+ring_peek in src/ring.c reads buf[head] (the next write slot) instead of buf[tail] (the
+oldest element)."""
+keywords = [["ring_peek", "peek"], ["head", "tail"]]
+
+[[mutation]]
+file = "src/ring.c"
+find = '''
+    *out = r->buf[r->tail];
+    return 0;'''
+replace = '''
+    *out = r->buf[r->head];
+    return 0;'''

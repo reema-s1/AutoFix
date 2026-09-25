@@ -1,0 +1,15 @@
+id = "slidewin-window-wrap"
+project = "slidewin"
+category = "logic"
+symptom = "test_failure"
+root_cause = """
+seq_in_window in src/window.c requires seq >= base, which is false once sequence numbers
+wrap past 255; the modular difference (seq_t)(seq - base) < size must be used alone."""
+keywords = [["seq_in_window"], ["wrap", "modul", "overflow", "seq >= base", "255"]]
+
+[[mutation]]
+file = "src/window.c"
+find = '''
+    return (seq_t)(seq - base) < size;'''
+replace = '''
+    return seq >= base && (unsigned)(seq - base) < size;'''

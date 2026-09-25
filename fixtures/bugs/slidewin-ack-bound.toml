@@ -1,0 +1,15 @@
+id = "slidewin-ack-bound"
+project = "slidewin"
+category = "logic"
+symptom = "test_failure"
+root_cause = """
+sender_on_ack in src/window.c rejects acks with advance >= in_flight instead of advance
+> in_flight, so an ack covering every outstanding frame is ignored."""
+keywords = [["sender_on_ack"], ["in_flight", "advance", ">=", "off-by-one", "bound"]]
+
+[[mutation]]
+file = "src/window.c"
+find = '''
+if (advance == 0 || advance > in_flight) {'''
+replace = '''
+if (advance == 0 || advance >= in_flight) {'''

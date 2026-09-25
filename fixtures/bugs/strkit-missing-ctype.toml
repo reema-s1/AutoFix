@@ -1,0 +1,16 @@
+id = "strkit-missing-ctype"
+project = "strkit"
+category = "build"
+symptom = "build_failure"
+root_cause = """
+src/strkit.c no longer includes <ctype.h>, so isspace and isdigit are implicitly
+declared, which -Werror turns into a build failure."""
+keywords = [["ctype", "isspace", "isdigit"], ["include", "implicit", "declar"]]
+
+[[mutation]]
+file = "src/strkit.c"
+find = '''
+#include <ctype.h>
+#include <limits.h>'''
+replace = '''
+#include <limits.h>'''
