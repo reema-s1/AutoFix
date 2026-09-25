@@ -38,7 +38,7 @@ model with tool calling:
 | `--provider` | Default model | Setup |
 |---|---|---|
 | `claude` (default) | `claude-opus-5` | `ANTHROPIC_API_KEY`, or a profile from `ant auth login` |
-| `groq` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` (a free key from console.groq.com) |
+| `groq` | `openai/gpt-oss-120b` | `GROQ_API_KEY` (a free key from console.groq.com) |
 | `ollama` | `qwen2.5-coder:7b` | a local [Ollama](https://ollama.com) server; `ollama pull <model>` |
 | `openai-compatible` | none (pass `--model`) | `--base-url` for any `/chat/completions` endpoint, optional `AUTOFIX_API_KEY` |
 

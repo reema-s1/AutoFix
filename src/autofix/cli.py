@@ -103,7 +103,7 @@ PROVIDERS = {
     # name: (default model, default base URL, env var holding the API key)
     "claude": ("claude-opus-5", None, None),
     "ollama": ("qwen2.5-coder:7b", "http://127.0.0.1:11434", None),
-    "groq": ("llama-3.3-70b-versatile", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    "groq": ("openai/gpt-oss-120b", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
     "openai-compatible": (None, None, "AUTOFIX_API_KEY"),
 }
 

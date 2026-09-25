@@ -185,7 +185,7 @@ class OpenAICompatibleBackend:
         base_url: str,
         api_key: str | None = None,
         temperature: float = 0.2,
-        max_tokens: int = 4_096,
+        max_tokens: int = 8_192,
         timeout: float = 600,
     ) -> None:
         self.model = model
