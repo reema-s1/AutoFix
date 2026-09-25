@@ -170,10 +170,12 @@ a patch that doesn't apply. They return an error result written for the
 model, so it can correct itself on the next turn.
 
 `apply_patch` ([patching.py](src/autofix/patching.py)) is built for
-model-written patches, whose content is usually right even when line numbers
-and hunk counts aren't. Each hunk is located by its context lines: the search
-starts from the header's line hint, then falls back to matching that ignores
-trailing whitespace. It accepts standard unified diffs and the context-anchored
+model-written patches, whose content is usually right even when line numbers,
+hunk counts or indentation aren't. Each hunk is located by its context lines:
+the search starts from the header's line hint, then falls back to matching that
+ignores trailing whitespace and finally indentation, re-indenting the
+replacement to fit the file. Line-number prefixes copied from `read_file`
+output are stripped. It accepts standard unified diffs and the context-anchored
 `*** Begin Patch / *** Update File:` format that some models produce natively,
 and takes the file name from the diff when the `path` argument is omitted.
 All hunks apply atomically, or none do.
