@@ -243,6 +243,29 @@ A test materializes every bug and checks that it produces its declared
 symptom (build failure, test failure or crash), so the dataset can't rot
 silently.
 
+### Results
+
+`gpt-oss-20b` (via Groq) on 8 of the seeded bugs: two per project, covering
+all four categories. The same model ran with a single tool call and with an
+8-step loop.
+
+| Budget | Runs | Fixed (verified by the harness) | Root cause identified | False claims of success | Protected files modified |
+|---|---:|---:|---:|---:|---:|
+| 1 tool call (single shot) | 8 | 0% | 38% | 0 | 0 |
+| 8-step loop | 5 | **60%** | **60%** | 0 | 0 |
+
+With the loop, the agent repaired a NULL-pointer crash (`slidewin-null-slot`),
+a dangling-iterator memory error (`lru-evict-order`) and an off-by-one
+capacity check (`ringbuf-full-check`), in 5–7 tool calls each. Every fix was
+confirmed by the harness's own rebuild and full test run, not by the model's
+claim.
+
+In the two remaining loop runs, both C/C++ build errors, the traces show the
+model proposing the correct fix. Its patches were rejected over formatting:
+line numbers copied from the file listing, a bare `@@` header, and uniform
+over-indentation. `apply_patch` now handles all three. Replaying the model's
+recorded patches repairs both bugs, and that replay is part of the test suite.
+
 ```bash
 autofix eval                              # all bugs, budgets 1 and 8, Claude
 autofix eval --provider groq --jobs 2     # hosted open-weight model
