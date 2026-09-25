@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ProjectConfig
-from .patching import PatchError, apply_unified_diff
+from .patching import PatchError, apply_unified_diff, patch_target
 from .process import CommandResult, run_command, truncate_middle
 from .redaction import Redactor
 from .sandbox import DEFAULT_IGNORED_DIRS, Sandbox, SandboxViolation
@@ -112,13 +112,17 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "from the current file. Test files and build configuration are read-only.",
         _schema(
             {
-                "path": {"type": "string", "description": "Project-relative path of the file to change."},
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative path of the file to change. May be omitted "
+                    "if the diff names the file in its headers.",
+                },
                 "diff": {
                     "type": "string",
                     "description": "Unified diff with one or more '@@ -a,b +c,d @@' hunks.",
                 },
             },
-            required=("path", "diff"),
+            required=("diff",),
         ),
     ),
 )
@@ -292,7 +296,14 @@ class Toolbox:
 
     # -- editing ------------------------------------------------------------
 
-    def apply_patch(self, path: str, diff: str) -> ToolResult:
+    def apply_patch(self, diff: str, path: str | None = None) -> ToolResult:
+        # An explicit path wins: models often write loose headers such as "a/ring.c".
+        path = path or patch_target(diff)
+        if path is None:
+            return ToolResult(
+                "patch not applied: no file given; pass `path` or name the file in the diff headers",
+                is_error=True,
+            )
         target = self.sandbox.check_writable(path)
         original = _read_text(target) if target.exists() else None
         try:

@@ -120,3 +120,82 @@ def test_creates_new_file():
 def test_rejects_malformed_diffs(diff, message):
     with pytest.raises(PatchError, match=message):
         parse_unified_diff(diff)
+
+
+# -- context-anchored patch format -------------------------------------------------
+
+from autofix.patching import patch_target  # noqa: E402
+
+
+def test_anchored_format_without_line_numbers():
+    diff = """\
+*** Begin Patch
+*** Update File: src/ring.c
+@@
+-    if (r->count > r->cap) {
++    if (r->count >= r->cap) {
+*** End Patch"""
+    result = apply_unified_diff(SOURCE, diff)
+    assert "if (r->count >= r->cap) {" in result.new_text
+    assert result.hunks_applied == 1
+
+
+def test_anchored_format_uses_anchor_line_and_order():
+    source = "int a(void) {\n    return 0;\n}\n\nint b(void) {\n    return 0;\n}\n"
+    diff = """\
+*** Begin Patch
+*** Update File: x.c
+@@ int b(void) {
+-    return 0;
++    return 2;
+*** End Patch"""
+    assert apply_unified_diff(source, diff).new_text.splitlines()[5] == "    return 2;"
+
+    two = """\
+*** Update File: x.c
+@@
+-    return 0;
++    return 1;
+@@
+-    return 0;
++    return 2;
+"""
+    lines = apply_unified_diff(source, two).new_text.splitlines()
+    assert lines[1] == "    return 1;" and lines[5] == "    return 2;"
+
+
+def test_anchored_format_changes_directly_after_directive():
+    diff = "*** Begin Patch\n*** Update File: ring.c\n-    return 0;\n+    return 1;\n*** End Patch\n"
+    assert "    return 1;" in apply_unified_diff(SOURCE, diff).new_text
+
+
+def test_anchored_format_add_file():
+    diff = "*** Begin Patch\n*** Add File: new.h\n+#pragma once\n+int f(void);\n*** End Patch\n"
+    assert apply_unified_diff(None, diff).new_text == "#pragma once\nint f(void);\n"
+
+
+@pytest.mark.parametrize(
+    "diff, message",
+    [
+        ("*** Begin Patch\n*** Delete File: a.c\n*** End Patch", "deleting files"),
+        ("*** Update File: a.c\n@@\n-x\n+y\n*** Update File: b.c\n@@\n-x\n+y\n", "more than one file"),
+        ("*** Move to: b.c\n", "unsupported patch directive"),
+        ("*** Update File: a.c\n@@ no_such_line\n-x\n+y\n", "anchor line not found"),
+    ],
+)
+def test_anchored_format_errors(diff, message):
+    with pytest.raises(PatchError, match=message):
+        apply_unified_diff("x\n", diff)
+
+
+@pytest.mark.parametrize(
+    "diff, expected",
+    [
+        ("*** Begin Patch\n*** Update File: src/ring.c\n@@\n-a\n+b\n", "src/ring.c"),
+        ("--- a/src/ring.c\n+++ b/src/ring.c\n@@ -1 +1 @@\n-a\n+b\n", "src/ring.c"),
+        ("--- /dev/null\n+++ b/new.h\n@@ -0,0 +1 @@\n+a\n", "new.h"),
+        ("@@ -1 +1 @@\n-a\n+b\n", None),
+    ],
+)
+def test_patch_target(diff, expected):
+    assert patch_target(diff) == expected

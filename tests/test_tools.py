@@ -170,3 +170,26 @@ def test_truncate_middle():
     assert out.startswith("line 0") and out.endswith("line 999")
     assert "lines omitted" in out
     assert truncate_middle("short", 300) == "short"
+
+
+def test_apply_patch_takes_file_from_diff_headers(toolbox):
+    diff = "*** Begin Patch\n*** Update File: src/calc.c\n@@\n-    return a - b;\n+    return a + b;\n*** End Patch"
+    result = toolbox.call("apply_patch", {"diff": diff})
+    assert result.content.startswith("patched src/calc.c")
+    assert toolbox.call("run_tests", {}).data["all_passed"] is True
+
+
+def test_apply_patch_explicit_path_wins_over_loose_headers(toolbox):
+    diff = "--- a/calc.c\n+++ b/calc.c\n@@ -4,1 +4,1 @@\n-    return a - b;\n+    return a + b;\n"
+    assert toolbox.call("apply_patch", {"path": "src/calc.c", "diff": diff}).content.startswith("patched src/calc.c")
+
+
+def test_apply_patch_needs_some_file(toolbox):
+    result = toolbox.call("apply_patch", {"diff": "@@ -4,1 +4,1 @@\n-    return a - b;\n+    return a + b;\n"})
+    assert result.is_error and "no file given" in result.content
+
+
+def test_apply_patch_header_path_is_still_sandboxed(toolbox):
+    diff = "*** Update File: tests/test_calc.c\n@@\n-/* tests */\n+/* hacked */\n"
+    result = toolbox.call("apply_patch", {"diff": diff})
+    assert result.is_error and "protected" in result.content
