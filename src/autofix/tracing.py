@@ -119,7 +119,7 @@ class HttpSink:
         if self._failed:
             return
         body = json.dumps({"events": batch}, default=str).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "autofix"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         request = urllib.request.Request(self.url, data=body, headers=headers, method="POST")

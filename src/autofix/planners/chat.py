@@ -25,6 +25,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .. import __version__
 from ..agent import DONE, Action, PlannerError, Usage
 from ..tools import ToolResult, ToolSpec
 from .prompts import BUDGET_EXHAUSTED, MAX_NUDGES, NUDGE, SYSTEM_PROMPT
@@ -58,6 +59,8 @@ class ChatBackend(Protocol):
 
 # -- HTTP ---------------------------------------------------------------------
 
+USER_AGENT = f"autofix/{__version__}"
+
 
 def _post_json(
     url: str,
@@ -71,7 +74,11 @@ def _post_json(
     body = json.dumps(payload).encode("utf-8")
     for attempt in range(max_retries + 1):
         request = urllib.request.Request(
-            url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST"
+            url,
+            data=body,
+            # Some API gateways reject urllib's default User-Agent outright.
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, **headers},
+            method="POST",
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -84,7 +91,7 @@ def _post_json(
             if exc.code == 404 and "model" in detail.lower():
                 raise PlannerError(f"model not found at {url}: {detail}") from exc
             if exc.code in (401, 403):
-                raise PlannerError(f"authentication failed ({exc.code}); check the API key") from exc
+                raise PlannerError(f"request refused ({exc.code}): {detail.strip()}; check the API key") from exc
             raise PlannerError(f"HTTP {exc.code} from {url}: {detail}") from exc
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             if attempt < max_retries and not isinstance(exc, TimeoutError):

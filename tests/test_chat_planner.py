@@ -42,6 +42,7 @@ class FakeServer:
             def do_POST(self):
                 length = int(self.headers["Content-Length"])
                 outer.requests.append({"path": self.path, "auth": self.headers.get("Authorization"),
+                                       "user_agent": self.headers.get("User-Agent"),
                                        "body": json.loads(self.rfile.read(length))})
                 reply = outer.replies.pop(0)
                 status, body, headers = reply if isinstance(reply, tuple) else (200, reply, {})
@@ -127,6 +128,7 @@ def test_openai_request_and_tool_roundtrip(serve):
 
     first = server.requests[0]
     assert first["path"] == "/v1/chat/completions" and first["auth"] == "Bearer k3y"
+    assert first["user_agent"].startswith("autofix/")
     assert first["body"]["tool_choice"] == "auto"
     history = server.requests[1]["body"]["messages"]
     assert history[-2]["tool_calls"][0]["id"] == "c1"
@@ -180,7 +182,7 @@ def test_rate_limit_is_retried(serve):
 
 @pytest.mark.parametrize(
     "status, body, message",
-    [(401, {"error": "bad key"}, "authentication failed"), (404, {"error": "model 'x' not found"}, "model not found"),
+    [(401, {"error": "bad key"}, "request refused .401.*bad key"), (404, {"error": "model 'x' not found"}, "model not found"),
      (400, {"error": "nope"}, "HTTP 400")],
 )
 def test_http_errors_become_planner_errors(serve, status, body, message):
