@@ -147,6 +147,7 @@ class AgentOutcome:
     modified_files: list[str]
     usage: Usage
     steps: list[StepRecord] = field(default_factory=list)
+    error: str | None = None  # why the planner failed, when stop_reason is planner_error
 
     @property
     def hallucinated_fix(self) -> bool:
@@ -194,12 +195,14 @@ def run_agent(
 
     steps: list[StepRecord] = []
     final: Action | None = None
+    error: str | None = None
     stop_reason = "budget_exhausted"
     for iteration in range(config.max_iters):
         try:
             action = planner.propose()
         except PlannerError as exc:
-            tracer.emit("error", iter=iteration, message=str(exc))
+            error = str(exc)
+            tracer.emit("error", iter=iteration, message=error)
             stop_reason = "planner_error"
             break
         _trace_plan(tracer, iteration, action)
@@ -232,7 +235,7 @@ def run_agent(
     tracer.emit("terminate", iter=len(steps), reason=stop_reason, summary=summary, root_cause=root_cause)
     return _finish(
         toolbox, planner, tracer, stop_reason, len(steps),
-        claimed if isinstance(claimed, bool) else None, root_cause, summary, steps,
+        claimed if isinstance(claimed, bool) else None, root_cause, summary, steps, error,
     )
 
 
@@ -246,6 +249,7 @@ def _finish(
     root_cause: str,
     summary: str,
     steps: list[StepRecord],
+    error: str | None = None,
 ) -> AgentOutcome:
     report = toolbox.test_report()
     verified = bool(report and report.all_passed)
@@ -262,6 +266,7 @@ def _finish(
         modified_files=toolbox.modified_files,
         usage=usage,
         steps=steps,
+        error=error,
     )
     tracer.emit(
         "run_end",

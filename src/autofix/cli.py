@@ -204,7 +204,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    from .evaluation import EvalConfig, evaluate, summarize, write_results
+    from .evaluation import EvalAborted, EvalConfig, evaluate, summarize, write_results
 
     if any(b < 1 for b in args.budgets):
         raise ConfigError("--budgets must all be at least 1")
@@ -226,11 +226,16 @@ def cmd_eval(args: argparse.Namespace) -> int:
         nonlocal done
         done += 1
         diag = "diagnosed" if result.diagnosis_correct else "misdiagnosed"
+        error = f" [error: {result.error}]" if result.error else ""
         print(f"[{done}/{total}] {result.bug_id} (budget {result.max_iters}): {result.outcome}, {diag}, "
-              f"{result.iterations} call(s)", file=sys.stderr, flush=True)
+              f"{result.iterations} call(s){error}", file=sys.stderr, flush=True)
 
     print(f"evaluating {len(bugs)} bug(s) x budgets {list(config.budgets)} -> {out_dir}", file=sys.stderr)
-    results = evaluate(bugs, config, planner_factory, judge, on_result=progress)
+    try:
+        results = evaluate(bugs, config, planner_factory, judge, on_result=progress)
+    except EvalAborted as exc:
+        print(f"autofix: stopping evaluation, the model could not be used: {exc}", file=sys.stderr)
+        return 1
     summaries = summarize(results)
     json_path, md_path = write_results(results, summaries, out_dir)
     print(md_path.read_text(encoding="utf-8"))

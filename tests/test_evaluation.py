@@ -158,3 +158,19 @@ def test_budget_of_one_cannot_verify(tmp_path):
     # Only the read happens before the budget is spent; the planner concludes without a fix.
     assert r.iterations == 1 and not r.verified_fixed
     assert r.outcome == "hallucinated"  # the oracle script claims fixed=True regardless
+
+
+def test_eval_aborts_when_first_run_cannot_reach_model(tmp_path):
+    from autofix.agent import PlannerError
+    from autofix.evaluation import EvalAborted
+
+    class Unreachable(ScriptedPlanner):
+        def propose(self):
+            raise PlannerError("request refused (403): bad key")
+
+    bugs = [BUGS["strkit-missing-ctype"], BUGS["ringbuf-size-signature"]]
+    started = []
+    config = EvalConfig(fixtures_dir=FIXTURES, work_dir=tmp_path, budgets=(1,))
+    with pytest.raises(EvalAborted, match="403"):
+        evaluate(bugs, config, lambda: Unreachable([]), KeywordJudge(), on_result=started.append)
+    assert len(started) == 1  # stopped after the first run

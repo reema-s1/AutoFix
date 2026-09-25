@@ -36,6 +36,10 @@ from .sandbox import Sandbox
 from .tools import Toolbox
 from .tracing import JsonlSink, Tracer, new_run_id
 
+class EvalAborted(RuntimeError):
+    """The first run could not reach the model, so every other run would fail the same way."""
+
+
 OUTCOMES = ("fixed", "fixed_unclaimed", "hallucinated", "gave_up_honestly", "no_verdict", "error")
 
 
@@ -210,10 +214,17 @@ def evaluate(
             on_result(result)
         return result
 
+    if not tasks:
+        return []
+    # Run one task alone first: a bad key or unreachable endpoint fails every run
+    # identically, so stop instead of producing a report full of planner errors.
+    first = run(tasks[0])
+    if first.stop_reason == "planner_error" and first.iterations == 0:
+        raise EvalAborted(first.error or "the planner failed before taking any action")
     if config.jobs <= 1:
-        return [run(t) for t in tasks]
+        return [first, *(run(t) for t in tasks[1:])]
     with ThreadPoolExecutor(max_workers=config.jobs) as pool:
-        return list(pool.map(run, tasks))
+        return [first, *pool.map(run, tasks[1:])]
 
 
 def evaluate_one(
@@ -270,6 +281,7 @@ def evaluate_one(
         input_tokens=outcome.usage.input_tokens,
         output_tokens=outcome.usage.output_tokens,
         duration_s=time.monotonic() - started,
+        error=outcome.error,
     )
 
 
