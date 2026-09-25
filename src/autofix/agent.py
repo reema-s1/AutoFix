@@ -88,6 +88,8 @@ class Action:
         confidence = args.get("confidence") if name == DONE else args.pop("confidence", None)
         if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
             confidence = None
+        else:
+            confidence = min(max(float(confidence), 0.0), 1.0)
         return cls(name, args, str(belief or ""), confidence, call_id)
 
 
