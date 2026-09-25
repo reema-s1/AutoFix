@@ -56,28 +56,38 @@ autofix fix /tmp/slidewin --provider ollama    # fully local
 autofix replay runs/<run-id>.jsonl
 ```
 
-Local models on CPU are slow. Build logs and source files make prompts
-several thousand tokens long, so each step can take minutes. A GPU or a
-hosted provider makes a full evaluation practical. For Ollama, `--num-ctx`
-sets the context window (default 16384), because Ollama's own default is too
-small for this workload.
+With Ollama, `--num-ctx` sets the context window (default 16384 tokens).
 
-`autofix fix` streams the agent's reasoning as it works:
+### What a run looks like
+
+`autofix fix` streams the agent's reasoning as it works. This is a real
+recorded run (`autofix replay`) on the `lru-const-contains` seeded bug, a C++
+build failure, with `gpt-oss-120b` on Groq:
 
 ```
-=== run af-20260925-094641-e091 on calc (model=claude-opus-5, max_iters=8)
-[0] observe  TESTS FAILED: 1 passed, 1 failed
-[0] believe  add() subtracts instead of adding (confidence 0.80)
-[0] act      apply_patch(path='src/calc.c', diff='@@ -4,1 +4,1 @@ ...')
-[0] result   patched src/calc.c: 1 hunk(s), +1 -1
-[1] believe  verify the fix (confidence 0.90)
-[1] act      run_tests()
-[1] result   ALL TESTS PASSED: 2 passed, 0 failed
-[2] conclude fixed: add() in src/calc.c subtracts (confidence 0.95)
-=== verified=True claimed=True iterations=2 tokens(in/out)=...
+=== run lru-const-contains-k8-20260925-192834-572e on lru-const-contains-k8 (model=openai/gpt-oss-120b, max_iters=8)
+[0] observe  BUILD FAILED (exit code 1); tests were not run.
+[0] believe  Read lru.cpp to see contains implementation and context. (confidence 0.90)
+[0] act      read_file(path='src/lru.cpp', start_line=1, end_line=200)
+[0] result   src/lru.cpp (lines 1-68 of 68)
+[1] believe  contains should not use operator[] in const method; use find to avoid
+             modifying map and qualifier error. (confidence 0.95)
+[1] act      apply_patch(diff='*** Begin Patch
+*** Update File: src/lru.cpp
+@@ ...')
+[1] result   patched src/lru.cpp: 1 hunk(s), +3 -1
+[2] believe  Run full test suite after fixing const issue. (confidence 0.90)
+[2] act      run_tests()
+[2] result   ALL TESTS PASSED: 8 passed, 0 failed
+[3] conclude fixed: src/lru.cpp Cache::contains used operator[] on a const unordered_map,
+             causing a qualifier discard error and unintended insertion. (confidence 1.00)
+=== verified=True claimed=True iterations=3 tokens(in/out)=15291/710
 ```
 
-It exits `0` only if the harness verified the fix itself.
+The agent read the failing code, stated a hypothesis, patched it, confirmed
+the fix with the test suite, and then reported the root cause. The final line
+is the harness's own check. `autofix fix` exits `0` only when that check
+passes.
 
 ## Pointing it at a project
 
@@ -153,17 +163,20 @@ model.
 | `read_file` | Returns a file with line numbers, paged in 400-line chunks. |
 | `grep_source` | Searches source files by regex and returns `path:line: text`. An invalid regex falls back to a literal search. |
 | `list_files` | Lists the project's source files. |
-| `apply_patch` | Applies a unified diff to one file. |
+| `apply_patch` | Applies a patch to one file, as a unified diff or in the `*** Begin Patch` format. |
 
 Tools never raise on expected failures such as a missing file, a bad regex or
 a patch that doesn't apply. They return an error result written for the
 model, so it can correct itself on the next turn.
 
-`apply_patch` ([patching.py](src/autofix/patching.py)) expects model-written
-diffs. Their content is usually right, but their line numbers and hunk counts
-often aren't. Each hunk is located by its context lines: the search starts
-outward from the header's line hint, then falls back to matching that ignores
-trailing whitespace. All hunks apply atomically, or none do.
+`apply_patch` ([patching.py](src/autofix/patching.py)) is built for
+model-written patches, whose content is usually right even when line numbers
+and hunk counts aren't. Each hunk is located by its context lines: the search
+starts from the header's line hint, then falls back to matching that ignores
+trailing whitespace. It accepts standard unified diffs and the context-anchored
+`*** Begin Patch / *** Update File:` format that some models produce natively,
+and takes the file name from the diff when the `path` argument is omitted.
+All hunks apply atomically, or none do.
 
 ### Guardrails
 
@@ -241,9 +254,8 @@ Each run is scored independently of what the agent claims:
   protected files are byte-for-byte unchanged.
 - **Diagnosed**: the stated root cause matches the known one. With Claude,
   an LLM judge with structured output decides by default. With other
-  providers the default is to check keyword groups offline, because small
-  judges are unreliable. Pass `--judge llm` or `--judge keywords` to choose
-  explicitly.
+  providers the default is an offline check against each bug's keyword
+  groups. Pass `--judge llm` or `--judge keywords` to choose explicitly.
 - **Hallucinated fix / honest give-up**: of the runs that didn't end with
   passing tests, how many claimed success anyway, and how many said they
   weren't fixed.
@@ -253,7 +265,10 @@ Each run is scored independently of what the agent claims:
 tool call (one shot: read the failure, make one change, stop) and with a full
 loop. The difference between the two rows shows what iterating adds.
 Results are written to `runs/eval-<timestamp>/`: `report.md`, `results.json`,
-and one trace per run.
+and one trace per run. Each result is saved as soon as it finishes. If the
+provider's rate limit or quota is reached, the evaluation stops cleanly, and
+`autofix eval --resume runs/eval-<timestamp>` continues with the same settings
+and runs only what's missing.
 
 ## Development
 
@@ -271,7 +286,7 @@ src/autofix/
   agent.py        plan-act-observe loop, action/outcome types, planner interface
   planners/       Claude, Ollama / OpenAI-compatible, and scripted planners
   tools.py        tool specs and sandboxed implementations
-  patching.py     forgiving unified-diff applier
+  patching.py     patch applier for model-written diffs
   sandbox.py      path confinement and write protection
   redaction.py    secret and path scrubbing
   process.py      subprocess execution, crash decoding
