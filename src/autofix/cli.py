@@ -76,8 +76,9 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--budgets", type=int, nargs="+", default=[1, 8],
                     help="tool-call budgets to compare (default: 1 8)")
     ev.add_argument("--jobs", type=int, default=1, help="bugs to run in parallel")
-    ev.add_argument("--judge", choices=("llm", "keywords"), default="llm",
-                    help="how to score diagnoses (default: llm)")
+    ev.add_argument("--judge", choices=("auto", "llm", "keywords"), default="auto",
+                    help="how to score diagnoses: an LLM judge or keyword groups "
+                         "(default: auto = llm for claude, keywords otherwise)")
     ev.add_argument("--out", type=Path, help="output directory (default: runs/eval-<timestamp>)")
     ev.set_defaults(handler=cmd_eval)
 
@@ -98,16 +99,74 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+PROVIDERS = {
+    # name: (default model, default base URL, env var holding the API key)
+    "claude": ("claude-opus-5", None, None),
+    "ollama": ("qwen2.5-coder:7b", "http://127.0.0.1:11434", None),
+    "groq": ("llama-3.3-70b-versatile", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    "openai-compatible": (None, None, "AUTOFIX_API_KEY"),
+}
+
+
 def _add_model_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model", default=os.environ.get("AUTOFIX_MODEL", "claude-opus-5"),
-                        help="Claude model id (default: $AUTOFIX_MODEL or claude-opus-5)")
-    parser.add_argument("--effort", choices=EFFORTS, default="high", help="reasoning effort (default: high)")
+    parser.add_argument("--provider", choices=sorted(PROVIDERS),
+                        default=os.environ.get("AUTOFIX_PROVIDER", "claude"),
+                        help="model provider (default: $AUTOFIX_PROVIDER or claude)")
+    parser.add_argument("--model", default=os.environ.get("AUTOFIX_MODEL"),
+                        help="model id (default: $AUTOFIX_MODEL or the provider's default)")
+    parser.add_argument("--base-url", default=os.environ.get("AUTOFIX_BASE_URL"),
+                        help="API base URL for ollama / openai-compatible providers")
+    parser.add_argument("--effort", choices=EFFORTS, default="high", help="Claude reasoning effort (default: high)")
+    parser.add_argument("--num-ctx", type=int, default=16_384,
+                        help="Ollama context window in tokens (default: 16384)")
+
+
+def _model(args: argparse.Namespace) -> str:
+    model = args.model or PROVIDERS[args.provider][0]
+    if not model:
+        raise ConfigError(f"--model is required for provider {args.provider!r}")
+    return model
+
+
+def _chat_backend(args: argparse.Namespace):
+    from .planners.chat import OllamaBackend, OpenAICompatibleBackend
+
+    _, default_url, key_env = PROVIDERS[args.provider]
+    if args.provider == "ollama":
+        base_url = args.base_url or os.environ.get("OLLAMA_HOST") or default_url
+        if "://" not in base_url:  # OLLAMA_HOST is often given as host:port
+            base_url = f"http://{base_url}"
+        return OllamaBackend(_model(args), base_url=base_url, num_ctx=args.num_ctx)
+    base_url = args.base_url or default_url
+    if not base_url:
+        raise ConfigError("--base-url is required for provider 'openai-compatible'")
+    api_key = os.environ.get(key_env) if key_env else None
+    if args.provider == "groq" and not api_key:
+        raise ConfigError("set GROQ_API_KEY (free key at https://console.groq.com/keys)")
+    return OpenAICompatibleBackend(_model(args), base_url=base_url, api_key=api_key)
 
 
 def _planner(args: argparse.Namespace):
-    from .planners import ClaudePlanner
+    if args.provider == "claude":
+        from .planners import ClaudePlanner
 
-    return ClaudePlanner(model=args.model, effort=args.effort)
+        return ClaudePlanner(model=_model(args), effort=args.effort)
+    from .planners.chat import ChatPlanner
+
+    return ChatPlanner(_chat_backend(args))
+
+
+def _judge(args: argparse.Namespace):
+    from .evaluation import ChatJudge, ClaudeJudge, KeywordJudge
+
+    mode = args.judge
+    if mode == "auto":
+        mode = "llm" if args.provider == "claude" else "keywords"
+    if mode == "keywords":
+        return KeywordJudge()
+    if args.provider == "claude":
+        return ClaudeJudge(model=_model(args))
+    return ChatJudge(_chat_backend(args))
 
 
 def _remote_sinks() -> list[TraceSink]:
@@ -145,7 +204,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    from .evaluation import ClaudeJudge, EvalConfig, KeywordJudge, evaluate, summarize, write_results
+    from .evaluation import EvalConfig, evaluate, summarize, write_results
 
     if any(b < 1 for b in args.budgets):
         raise ConfigError("--budgets must all be at least 1")
@@ -154,7 +213,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
     config = EvalConfig(
         fixtures_dir=args.fixtures, work_dir=out_dir, budgets=tuple(sorted(set(args.budgets))), jobs=args.jobs
     )
-    judge = ClaudeJudge(model=args.model) if args.judge == "llm" else KeywordJudge()
+    judge = _judge(args)
+
+    def planner_factory():
+        return _planner(args)
+
+    planner_factory()  # fail fast on configuration errors before any work starts
     total = len(bugs) * len(config.budgets)
     done = 0
 
@@ -166,7 +230,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
               f"{result.iterations} call(s)", file=sys.stderr, flush=True)
 
     print(f"evaluating {len(bugs)} bug(s) x budgets {list(config.budgets)} -> {out_dir}", file=sys.stderr)
-    results = evaluate(bugs, config, lambda: _planner(args), judge, on_result=progress)
+    results = evaluate(bugs, config, planner_factory, judge, on_result=progress)
     summaries = summarize(results)
     json_path, md_path = write_results(results, summaries, out_dir)
     print(md_path.read_text(encoding="utf-8"))

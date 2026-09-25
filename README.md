@@ -32,8 +32,15 @@ agent *claimed*. Claimed fixes that don't hold are measured and reported.
 
 ## Quick start
 
-Requires Python 3.11+, a C/C++ toolchain for your project, and Anthropic API
-credentials (`ANTHROPIC_API_KEY`, or a profile from `ant auth login`).
+Requires Python 3.11+, a C/C++ toolchain for your project, and access to a
+model with tool calling:
+
+| `--provider` | Default model | Setup |
+|---|---|---|
+| `claude` (default) | `claude-opus-5` | `ANTHROPIC_API_KEY`, or a profile from `ant auth login` |
+| `groq` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` (a free key from console.groq.com) |
+| `ollama` | `qwen2.5-coder:7b` | a local [Ollama](https://ollama.com) server; `ollama pull <model>` |
+| `openai-compatible` | none (pass `--model`) | `--base-url` for any `/chat/completions` endpoint, optional `AUTOFIX_API_KEY` |
 
 ```bash
 pip install -e ".[dev]"
@@ -41,11 +48,19 @@ pip install -e ".[dev]"
 # Reproduce one of the seeded bugs and let the agent fix it
 autofix bugs list
 autofix bugs materialize slidewin-window-wrap /tmp/slidewin
-autofix fix /tmp/slidewin
+autofix fix /tmp/slidewin                      # Claude
+autofix fix /tmp/slidewin --provider groq      # hosted open-weight model
+autofix fix /tmp/slidewin --provider ollama    # fully local
 
 # Replay the recorded run later
 autofix replay runs/<run-id>.jsonl
 ```
+
+Local models on CPU are slow. Build logs and source files make prompts
+several thousand tokens long, so each step can take minutes. A GPU or a
+hosted provider makes a full evaluation practical. For Ollama, `--num-ctx`
+sets the context window (default 16384), because Ollama's own default is too
+small for this workload.
 
 `autofix fix` streams the agent's reasoning as it works:
 
@@ -121,9 +136,13 @@ The loop itself doesn't depend on any particular model. `Planner` is an
 interface. [ClaudePlanner](src/autofix/planners/claude.py) drives it with
 Claude tool use: strict schemas, parallel tool use disabled so each model
 call is exactly one step, adaptive thinking, and prompt caching over the
-append-only conversation. [ScriptedPlanner](src/autofix/planners/scripted.py)
-replays a fixed script, which is how the loop, tools and tracing are tested
-without a model.
+append-only conversation. [ChatPlanner](src/autofix/planners/chat.py) drives
+open-weight and hosted models through Ollama's native API or any
+OpenAI-compatible endpoint. It retries rate limits, and it recovers tool
+calls that smaller models write as JSON text instead of using structured
+tool calls. [ScriptedPlanner](src/autofix/planners/scripted.py) replays a
+fixed script, which is how the loop, tools and tracing are tested without a
+model.
 
 ### Tools ([tools.py](src/autofix/tools.py))
 
@@ -210,18 +229,21 @@ symptom (build failure, test failure or crash), so the dataset can't rot
 silently.
 
 ```bash
-autofix eval                        # all bugs, budgets 1 and 8, LLM-judged diagnoses
-autofix eval --only strkit --budgets 1 4 8 --jobs 4
-autofix eval --judge keywords       # offline diagnosis scoring
+autofix eval                              # all bugs, budgets 1 and 8, Claude
+autofix eval --provider groq --jobs 2     # hosted open-weight model
+autofix eval --only strkit --budgets 1 4 8
+autofix eval --judge keywords             # offline diagnosis scoring
 ```
 
 Each run is scored independently of what the agent claims:
 
 - **Fixed**: the project's own build and tests pass afterwards, and the
   protected files are byte-for-byte unchanged.
-- **Diagnosed**: the stated root cause matches the known one. By default an
-  LLM judge with structured output decides. `--judge keywords` checks
-  keyword groups offline instead.
+- **Diagnosed**: the stated root cause matches the known one. With Claude,
+  an LLM judge with structured output decides by default. With other
+  providers the default is to check keyword groups offline, because small
+  judges are unreliable. Pass `--judge llm` or `--judge keywords` to choose
+  explicitly.
 - **Hallucinated fix / honest give-up**: of the runs that didn't end with
   passing tests, how many claimed success anyway, and how many said they
   weren't fixed.
@@ -247,7 +269,7 @@ compiler is on `PATH`.
 ```
 src/autofix/
   agent.py        plan-act-observe loop, action/outcome types, planner interface
-  planners/       Claude tool-use planner, scripted planner
+  planners/       Claude, Ollama / OpenAI-compatible, and scripted planners
   tools.py        tool specs and sandboxed implementations
   patching.py     forgiving unified-diff applier
   sandbox.py      path confinement and write protection

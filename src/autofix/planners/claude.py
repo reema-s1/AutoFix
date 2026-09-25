@@ -14,40 +14,11 @@ import anthropic
 
 from ..agent import DONE, Action, PlannerError, Usage
 from ..tools import ToolResult, ToolSpec
+from .prompts import BUDGET_EXHAUSTED, MAX_NUDGES, NUDGE, SYSTEM_PROMPT
 
 DEFAULT_MODEL = "claude-opus-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-SYSTEM_PROMPT = """\
-You are AutoFix, an engineer who diagnoses and repairs failing C and C++ builds and test suites.
-
-You work in a loop. Each turn you call exactly one tool, then you see its real output before \
-deciding what to do next. Use what each result tells you: confirm or revise your hypothesis \
-instead of repeating an action whose outcome you already know.
-
-How to work:
-- Start from the evidence in the failure output: compiler diagnostics, failing assertion \
-locations, crash reasons. Read the code they point at before changing anything.
-- Form a specific hypothesis about the root cause and state it in the `belief` field of every \
-tool call, with an honest `confidence` between 0 and 1.
-- Make the smallest change that fixes the root cause in the code under test. Test files and \
-build configuration are read-only; a fix that weakens a test is not a fix.
-- When writing a diff for apply_patch, copy the context lines exactly from your most recent \
-read of the file.
-- After patching, run run_tests to verify. Only report fixed=true if the most recent \
-run_tests showed every test passing.
-- If you cannot make progress, stop and say so with fixed=false. An honest "not fixed" is far \
-more useful than a claimed fix that does not hold.
-
-When finished, call declare_done with the root cause (file, function and the actual defect), \
-a summary of the change, and whether it is fixed."""
-
-_BUDGET_EXHAUSTED = (
-    "The tool-call budget is exhausted. Do not call any investigation or editing tools. "
-    f"Call {DONE} now with your best account of the root cause and whether the last test run passed."
-)
-_NUDGE = f"Continue by calling exactly one tool, or call {DONE} if you are finished."
-_MAX_NUDGES = 2
 _UNSUPPORTED_STRICT_KEYWORDS = ("minimum", "maximum")
 
 
@@ -78,7 +49,7 @@ class ClaudePlanner:
         self._pending_tool_use = None
 
     def propose(self) -> Action:
-        for _ in range(_MAX_NUDGES + 1):
+        for _ in range(MAX_NUDGES + 1):
             response = self._create()
             self.messages.append({"role": "assistant", "content": response.content})
             tool_use = next((b for b in response.content if b.type == "tool_use"), None)
@@ -87,7 +58,7 @@ class ClaudePlanner:
                 return Action.from_tool_input(tool_use.name, _as_dict(tool_use.input), tool_use.id)
             if response.stop_reason == "max_tokens":
                 raise PlannerError("model response hit max_tokens before choosing an action")
-            self.messages.append({"role": "user", "content": _NUDGE})
+            self.messages.append({"role": "user", "content": NUDGE})
         raise PlannerError("model repeatedly ended its turn without calling a tool")
 
     def observe(self, action: Action, result: ToolResult) -> None:
@@ -111,9 +82,9 @@ class ClaudePlanner:
     def conclude(self, reason: str) -> Action:
         last = self.messages[-1] if self.messages else None
         if last and last["role"] == "user" and isinstance(last["content"], list):
-            last["content"].append({"type": "text", "text": _BUDGET_EXHAUSTED})
+            last["content"].append({"type": "text", "text": BUDGET_EXHAUSTED})
         else:
-            self.messages.append({"role": "user", "content": _BUDGET_EXHAUSTED})
+            self.messages.append({"role": "user", "content": BUDGET_EXHAUSTED})
         action = self.propose()
         if action.tool == DONE:
             return action

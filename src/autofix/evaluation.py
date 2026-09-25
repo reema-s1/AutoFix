@@ -119,6 +119,37 @@ class ClaudeJudge:
         return Verdict(parsed.correct, parsed.rationale, f"llm:{self.model}")
 
 
+class ChatJudge:
+    """LLM judge for any chat backend (Ollama, OpenAI-compatible) using a JSON reply."""
+
+    _FORMAT = '\n\nReply with only a JSON object: {"correct": true or false, "rationale": "..."}'
+
+    def __init__(self, backend: Any) -> None:
+        self.backend = backend
+        self._fallback = KeywordJudge()
+
+    def judge(self, bug: SeededBug, diagnosis: str) -> Verdict:
+        from .agent import PlannerError
+
+        if not diagnosis.strip():
+            return Verdict(False, "no diagnosis given", "empty")
+        prompt = _JUDGE_PROMPT.format(known=bug.root_cause, diagnosis=diagnosis) + self._FORMAT
+        try:
+            reply = self.backend.complete([{"role": "user", "content": prompt}], [])
+            parsed = _JudgeOutput.model_validate_json(_json_object(reply.content))
+        except (PlannerError, ValueError) as exc:
+            verdict = self._fallback.judge(bug, diagnosis)
+            return Verdict(verdict.correct, f"judge unusable ({type(exc).__name__}); {verdict.rationale}", "keywords")
+        return Verdict(parsed.correct, parsed.rationale, f"llm:{self.backend.name}:{self.backend.model}")
+
+
+def _json_object(text: str) -> str:
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("no JSON object in reply")
+    return text[start : end + 1]
+
+
 # -- running ------------------------------------------------------------------
 
 
