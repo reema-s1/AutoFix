@@ -83,3 +83,49 @@ def test_each_bug_produces_its_declared_symptom(bug, tmp_path):
     assert not report.all_passed, "expected at least one failing test"
     if bug.symptom == "crash":
         assert any(c.status == "crash" for c in report.failed), report.summary_line()
+
+
+# Patches written by models during real evaluation runs that the applier once
+# rejected. Each must now repair its bug so that the full test suite passes.
+RECORDED_MODEL_PATCHES = [
+    (
+        "lru-const-contains",
+        "src/lru.cpp",
+        "@@ -38,5 +38,7 @@\n-    bool Cache::contains(int key) const\n-    {\n"
+        "-        return index_[key] != order_.end();\n-    }\n+    bool Cache::contains(int key) const\n"
+        "+    {\n+        // Use find to avoid modifying the map in a const context.\n"
+        "+        auto it = index_.find(key);\n+        return it != index_.end();\n+    }\n",
+    ),
+    (
+        "ringbuf-size-signature",
+        "src/ring.c",
+        "--- a/src/ring.c\n@@\n-67| int ring_size(const ring_t *r)\n-68| {\n-69|     return r->count;\n"
+        "-70| }\n+67| size_t ring_size(const ring_t *r)\n+68| {\n+69|     return r->count;\n+70| }\n",
+    ),
+    (
+        "ringbuf-size-signature",
+        "src/ring.c",
+        "--- a/src/ring.c\n+++ b/src/ring.c\n@@\n-    int ring_size(const ring_t *r)\n-    {\n"
+        "-        return r->count;\n-    }\n+    size_t ring_size(const ring_t *r)\n+    {\n"
+        "+        return r->count;\n+    }\n",
+    ),
+    (
+        "ringbuf-full-check",
+        None,
+        "*** Begin Patch\n*** Update File: src/ring.c\n@@\n-    if (r->count > r->cap) {\n"
+        "-        return -1;\n-    }\n+    if (r->count >= r->cap) {\n+        return -1;\n+    }\n"
+        "*** End Patch",
+    ),
+]
+
+
+@pytest.mark.needs_cc
+@pytest.mark.parametrize("bug_id, path, diff", RECORDED_MODEL_PATCHES, ids=lambda v: str(v)[:24])
+def test_recorded_model_patches_repair_their_bug(bug_id, path, diff, tmp_path):
+    bug = next(b for b in ALL_BUGS if b.id == bug_id)
+    toolbox = Toolbox(ProjectConfig.load(materialize(bug, FIXTURES, tmp_path / bug_id)))
+    args = {"diff": diff} if path is None else {"path": path, "diff": diff}
+    result = toolbox.call("apply_patch", args)
+    assert not result.is_error, result.content
+    report = toolbox.test_report()
+    assert report is not None and report.all_passed

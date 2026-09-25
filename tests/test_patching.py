@@ -111,7 +111,7 @@ def test_creates_new_file():
     "diff, message",
     [
         ("just some text", "no hunks"),
-        ("@@ bogus @@\n-a\n", "malformed hunk header"),
+        ("@@ -x,1 +1 @@\n-a\n+b\n", "anchor line not found"),
         ("@@ -1,1 +1,1 @@\n a\n", "no changes"),
         ("@@ -1,1 +1,1 @@\n*a\n", "unexpected line"),
         ("@@ -1 +1 @@\n-a\n+b\n--- a/other.c\n+++ b/other.c\n@@ -1 +1 @@\n-x\n+y\n", "more than one file"),
@@ -119,7 +119,7 @@ def test_creates_new_file():
 )
 def test_rejects_malformed_diffs(diff, message):
     with pytest.raises(PatchError, match=message):
-        parse_unified_diff(diff)
+        apply_unified_diff("x\n", diff)
 
 
 # -- context-anchored patch format -------------------------------------------------
@@ -199,3 +199,61 @@ def test_anchored_format_errors(diff, message):
 )
 def test_patch_target(diff, expected):
     assert patch_target(diff) == expected
+
+
+# -- quirks seen in real model output ---------------------------------------------
+
+LRU = """\
+bool Cache::contains(int key) const
+{
+    return index_[key] != order_.end();
+}
+"""
+
+
+def test_bare_hunk_header_in_plain_diff():
+    diff = "--- a/src/ring.c\n+++ b/src/ring.c\n@@\n-    return 0;\n+    return 1;\n"
+    assert "    return 1;" in apply_unified_diff(SOURCE, diff).new_text
+
+
+def test_line_number_prefixes_from_listings_are_stripped():
+    source = "int ring_size(const ring_t *r)\n{\n    return r->count;\n}\n"
+    diff = (
+        "--- a/src/ring.c\n@@\n-67| int ring_size(const ring_t *r)\n-68| {\n-69|     return r->count;\n"
+        "-70| }\n+67| size_t ring_size(const ring_t *r)\n+68| {\n+69|     return r->count;\n+70| }\n"
+    )
+    assert apply_unified_diff(source, diff).new_text == source.replace("int ring_size", "size_t ring_size")
+
+
+def test_numbered_looking_code_is_not_stripped_unless_every_line_is():
+    source = "x = 1| 2;\ny = 3;\n"
+    diff = "@@\n-x = 1| 2;\n+x = 1| 4;\n y = 3;\n"
+    assert apply_unified_diff(source, diff).new_text == "x = 1| 4;\ny = 3;\n"
+
+
+def test_uniformly_over_indented_hunk_is_reindented():
+    diff = (
+        "@@ -38,5 +38,7 @@\n-    bool Cache::contains(int key) const\n-    {\n"
+        "-        return index_[key] != order_.end();\n-    }\n+    bool Cache::contains(int key) const\n"
+        "+    {\n+        auto it = index_.find(key);\n+        return it != index_.end();\n+    }\n"
+    )
+    result = apply_unified_diff(LRU, diff)
+    assert result.new_text == (
+        "bool Cache::contains(int key) const\n{\n    auto it = index_.find(key);\n"
+        "    return it != index_.end();\n}\n"
+    )
+    assert result.fuzzy
+
+
+def test_under_indented_hunk_is_reindented():
+    source = "void f(void)\n{\n    if (x) {\n        y();\n    }\n}\n"
+    diff = "@@\n-if (x) {\n-    y();\n-}\n+if (x && z) {\n+    y();\n+}\n"
+    assert apply_unified_diff(source, diff).new_text == (
+        "void f(void)\n{\n    if (x && z) {\n        y();\n    }\n}\n"
+    )
+
+
+def test_exact_match_preferred_over_indentation_match():
+    source = "    a();\na();\n"
+    diff = "@@\n-a();\n+b();\n"
+    assert apply_unified_diff(source, diff).new_text == "    a();\nb();\n"

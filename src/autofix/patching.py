@@ -6,7 +6,9 @@ at line numbers and hunk-header counts. This applier therefore:
 * ignores the ``+c,d`` counts and derives hunk extent from line prefixes,
 * treats the ``-a`` start line only as a hint, searching outward from it for
   the hunk's context + removed lines,
-* falls back to a trailing-whitespace-insensitive match,
+* falls back to matching that ignores trailing whitespace, then indentation
+  (re-indenting the replacement to fit the file),
+* strips ``67| ``-style line-number prefixes copied from numbered listings,
 * applies all hunks atomically: either every hunk lands or the file is
   left untouched.
 
@@ -111,10 +113,9 @@ def parse_unified_diff(diff: str) -> list[Hunk]:
             match = _HUNK_HEADER.match(raw)
             if match:
                 current = Hunk(old_start=int(match.group(1)))
-            elif anchored_file is not None:
-                current = Hunk(old_start=None, anchor=raw[2:].strip(" @") or None)
             else:
-                raise PatchError(f"malformed hunk header: {raw!r} (expected '@@ -a,b +c,d @@')")
+                # "@@" or "@@ <line text>": no line numbers, locate by content.
+                current = Hunk(old_start=None, anchor=raw[2:].strip(" @") or None)
             hunks.append(current)
             continue
         if current is None:
@@ -143,9 +144,20 @@ def parse_unified_diff(diff: str) -> list[Hunk]:
         # Trailing blank context lines are usually an artefact of how the diff was quoted.
         while hunk.lines and hunk.lines[-1] == (" ", ""):
             hunk.lines.pop()
+        _strip_line_numbers(hunk)
         if not any(op in "-+" for op, _ in hunk.lines):
             raise PatchError("hunk makes no changes")
     return hunks
+
+
+_LINE_NUMBER_PREFIX = re.compile(r"^\s*\d+\| ?")
+
+
+def _strip_line_numbers(hunk: Hunk) -> None:
+    """Drop "  67| " prefixes copied from numbered file listings, if every line has one."""
+    texts = [text for _, text in hunk.lines if text]
+    if texts and all(_LINE_NUMBER_PREFIX.match(text) for text in texts):
+        hunk.lines = [(op, _LINE_NUMBER_PREFIX.sub("", text, count=1)) for op, text in hunk.lines]
 
 
 def apply_unified_diff(original: str | None, diff: str) -> PatchResult:
@@ -164,13 +176,13 @@ def apply_unified_diff(original: str | None, diff: str) -> PatchResult:
         if hunk.old_start is not None:
             hint = max(hunk.old_start - 1, 0) + offset
             if not old:
-                position, exact = min(hint, len(lines)), True
+                position, tier = min(hint, len(lines)), EXACT
             else:
                 located = _locate_near(lines, old, hint)
                 if located is None:
                     raise PatchError(_mismatch_message(index, old, lines, hint))
-                position, exact = located
-            if not exact or position != hint:
+                position, tier = located
+            if tier != EXACT or position != hint:
                 fuzzy = True
             offset += len(hunk.new_lines) - len(old) + (position - hint)
         else:
@@ -181,16 +193,19 @@ def apply_unified_diff(original: str | None, diff: str) -> PatchResult:
                     raise PatchError(f"hunk {index}: anchor line not found: {hunk.anchor!r}")
                 start = anchor_at + 1
             if not old:
-                position, exact = (start if hunk.anchor else len(lines)), True
+                position, tier = (start if hunk.anchor else len(lines)), EXACT
             else:
                 located = _locate_after(lines, old, start)
                 if located is None:
                     raise PatchError(_mismatch_message(index, old, lines, start))
-                position, exact = located
-            fuzzy = fuzzy or not exact
+                position, tier = located
+            fuzzy = fuzzy or tier != EXACT
 
-        lines[position : position + len(old)] = hunk.new_lines
-        cursor = position + len(hunk.new_lines)
+        new = hunk.new_lines
+        if tier == INDENT:
+            new = _reindent(new, old, lines[position : position + len(old)])
+        lines[position : position + len(old)] = new
+        cursor = position + len(new)
 
     text = newline.join(lines)
     if lines and had_trailing_newline:
@@ -204,33 +219,53 @@ def apply_unified_diff(original: str | None, diff: str) -> PatchResult:
     )
 
 
-def _matches(lines: list[str], needle: list[str]) -> tuple[list[int], bool]:
-    """All positions of ``needle`` in ``lines``: exact matches, else whitespace-insensitive."""
+# Matching tiers, strictest first: exact, trailing whitespace ignored, indentation ignored.
+_TIERS = (lambda s: s, lambda s: s.rstrip(), lambda s: s.strip())
+EXACT, TRAILING_WS, INDENT = range(3)
+
+
+def _matches(lines: list[str], needle: list[str]) -> tuple[list[int], int]:
+    """All positions of ``needle`` in ``lines`` at the strictest tier that finds any."""
     span = len(needle)
-    for normalize, exact in ((lambda s: s, True), (lambda s: s.rstrip(), False)):
+    for tier, normalize in enumerate(_TIERS):
         target = [normalize(s) for s in needle]
         normalized = [normalize(s) for s in lines]
         positions = [p for p in range(len(lines) - span + 1) if normalized[p : p + span] == target]
         if positions:
-            return positions, exact
-    return [], True
+            return positions, tier
+    return [], EXACT
 
 
-def _locate_near(lines: list[str], needle: list[str], hint: int) -> tuple[int, bool] | None:
-    """The match closest to ``hint``."""
-    positions, exact = _matches(lines, needle)
+def _reindent(new_lines: list[str], old_lines: list[str], matched: list[str]) -> list[str]:
+    """Shift replacement lines by the indent difference between the hunk and the file."""
+    pairs = [(o, m) for o, m in zip(old_lines, matched) if o.strip()]
+    if not pairs:
+        return new_lines
+    old, found = pairs[0]
+    delta = (len(found) - len(found.lstrip())) - (len(old) - len(old.lstrip()))
+    if delta == 0:
+        return new_lines
+    if delta > 0:
+        return [" " * delta + line if line.strip() else line for line in new_lines]
+    trim = -delta
+    return [line[trim:] if line[:trim].strip() == "" else line.lstrip() for line in new_lines]
+
+
+def _locate_near(lines: list[str], needle: list[str], hint: int) -> tuple[int, int] | None:
+    """The match closest to ``hint``, with its matching tier."""
+    positions, tier = _matches(lines, needle)
     if not positions:
         return None
-    return min(positions, key=lambda p: (abs(p - hint), p)), exact
+    return min(positions, key=lambda p: (abs(p - hint), p)), tier
 
 
-def _locate_after(lines: list[str], needle: list[str], start: int) -> tuple[int, bool] | None:
-    """The first match at or after ``start``, else the first match anywhere."""
-    positions, exact = _matches(lines, needle)
+def _locate_after(lines: list[str], needle: list[str], start: int) -> tuple[int, int] | None:
+    """The first match at or after ``start`` (else the first anywhere), with its tier."""
+    positions, tier = _matches(lines, needle)
     if not positions:
         return None
     after = [p for p in positions if p >= start]
-    return (after or positions)[0], exact
+    return (after or positions)[0], tier
 
 
 def _find_anchor(lines: list[str], anchor: str, start: int) -> int | None:
