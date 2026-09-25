@@ -266,3 +266,24 @@ def test_cli_provider_configuration(monkeypatch):
         cli._planner(parse("--provider", "openai-compatible", "--base-url", "http://x/v1"))
     args = SimpleNamespace(judge="auto", provider="ollama")
     assert type(cli._judge(args)).__name__ == "KeywordJudge"
+
+
+def test_rejected_tool_call_is_explained_and_retried(serve):
+    rejected = (400, {"error": {"message": "Tool call validation failed: missing properties: 'path'",
+                                "type": "invalid_request_error", "code": "tool_use_failed"}}, {})
+    server = serve([rejected, openai_reply("read_file", {"path": "a.c"})])
+    planner = ChatPlanner(OpenAICompatibleBackend("m", base_url=server.url))
+    planner.begin("b", SPECS)
+    assert planner.propose().args == {"path": "a.c"}
+    retry_messages = server.requests[1]["body"]["messages"]
+    assert retry_messages[-1]["role"] == "user"
+    assert "rejected before it ran: Tool call validation failed" in retry_messages[-1]["content"]
+
+
+def test_repeated_rejections_give_up(serve):
+    rejected = (400, {"error": {"message": "bad", "code": "tool_use_failed"}}, {})
+    server = serve([rejected] * 3)
+    planner = ChatPlanner(OpenAICompatibleBackend("m", base_url=server.url))
+    planner.begin("b", SPECS)
+    with pytest.raises(PlannerError, match="without calling a tool"):
+        planner.propose()

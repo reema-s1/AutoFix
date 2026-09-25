@@ -31,6 +31,10 @@ from ..tools import ToolResult, ToolSpec
 from .prompts import BUDGET_EXHAUSTED, MAX_NUDGES, NUDGE, SYSTEM_PROMPT
 
 
+class ToolCallRejected(PlannerError):
+    """The provider refused the model's tool call (e.g. arguments failed schema validation)."""
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -88,6 +92,8 @@ def _post_json(
             if exc.code in (429, 500, 502, 503, 504) and attempt < max_retries:
                 sleep(_retry_delay(exc.headers.get("Retry-After"), attempt))
                 continue
+            if exc.code == 400 and "tool_use_failed" in detail:
+                raise ToolCallRejected(_error_message(detail)) from exc
             if exc.code == 404 and "model" in detail.lower():
                 raise PlannerError(f"model not found at {url}: {detail}") from exc
             if exc.code in (401, 403):
@@ -101,6 +107,13 @@ def _post_json(
         except json.JSONDecodeError as exc:
             raise PlannerError(f"invalid JSON from {url}") from exc
     raise PlannerError(f"giving up on {url} after {max_retries} retries")
+
+
+def _error_message(detail: str) -> str:
+    try:
+        return str(json.loads(detail)["error"]["message"])
+    except (ValueError, KeyError, TypeError):
+        return detail
 
 
 def _retry_delay(retry_after: str | None, attempt: int) -> float:
@@ -262,7 +275,12 @@ class ChatPlanner:
 
     def propose(self) -> Action:
         for _ in range(MAX_NUDGES + 1):
-            reply = self.backend.complete(self.messages, self._tools)
+            try:
+                reply = self.backend.complete(self.messages, self._tools)
+            except ToolCallRejected as exc:
+                # The call never reached us, so there is nothing to answer; explain and retry.
+                self.messages.append({"role": "user", "content": _REJECTED.format(reason=exc)})
+                continue
             self.usage.add(reply.usage)
             call = reply.tool_calls[0] if reply.tool_calls else _inline_tool_call(reply.content, self._tool_names)
             if call is not None:
@@ -298,6 +316,12 @@ class ChatPlanner:
             action.belief,
             action.confidence,
         )
+
+
+_REJECTED = (
+    "Your last tool call was rejected before it ran: {reason}\n"
+    "Call a tool again with arguments that match its schema exactly."
+)
 
 
 def _parse_arguments(raw: Any) -> dict[str, Any]:
