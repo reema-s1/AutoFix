@@ -9,3 +9,7 @@ build/
 # Agent run artifacts
 runs/
 *.trace.jsonl
+
+# Fixture test binaries
+test_runner
+test_runner.exe

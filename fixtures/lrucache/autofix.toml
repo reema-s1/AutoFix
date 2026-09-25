@@ -1,0 +1,12 @@
+[build]
+command = ["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror", "-Isrc", "-Itests",
+           "-o", "test_runner", "src/lru.cpp", "tests/test_lru.cpp"]
+timeout = 180
+
+[test]
+command = ["./test_runner"]
+format = "minitest"
+timeout = 20
+
+[sandbox]
+protected = ["tests/**", "autofix.toml"]
